@@ -1,94 +1,82 @@
 --[[
-    СКРИПТ ДЛЯ МАССОВОЙ ОТПРАВКИ ВСЕХ ПИТОМЦЕВ ЧЕРЕЗ ПОЧТОВЫЙ ЯЩИК
-    Только для образовательных целей!
-    Укажи точное имя получателя ниже ↓
+    СКРИПТ ДЛЯ МАССОВОЙ ОТПРАВКИ ВСЕХ ПИТОМЦЕВ ЧЕРЕЗ ПОЧТУ
+    Запусти один раз — и все питомцы улетят получателю.
+    Работает только с полным дампом игры (Synapse X и аналоги).
 --]]
 
-local RECEIVER_USERNAME = "woodalaz" -- <-- ИМЯ ПОЛУЧАТЕЛЯ
-local MESSAGE = "суп" -- Текст сообщения (обязателен)
+-- НАСТРОЙКИ (обязательно измени)
+local RECEIVER_USERNAME = "woodalaz"  -- Имя получателя
+local MESSAGE = "суп"    -- Текст сообщения
 
--- ============== НАСТРОЙКА ОКРУЖЕНИЯ ==============
-local Players = game:GetService("Players")
+-- Подключаем нужные модули
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local LocalPlayer = Players.LocalPlayer
+local Items = require(ReplicatedStorage.Library.Items)          -- Библиотека предметов
+local Network = require(ReplicatedStorage.Library.Client.Network) -- Сетевые вызовы
 
--- Проверяем наличие необходимых модулей
-local success, result = pcall(function()
-    return require(ReplicatedStorage.Library.Client.Network)
-end)
-if not success then
-    warn("Скрипт не может загрузить Network. Эксплойт не поддерживает выполнение серверных вызовов.")
-    return
-end
-local Network = result
-
-local success2, v8 = pcall(function()
-    return require(ReplicatedStorage.Library.Items)
-end)
-if not success2 then
-    warn("Не удалось загрузить библиотеку предметов.")
-    return
-end
-local Items = v8
-
--- Вспомогательная функция для получения всех питомцев
-local function getAllPets()
-    local pets = {}
-    -- Ищем класс "Pet" напрямую через реестр (аналог v3.Types["Pet"])
-    local PetType = require(ReplicatedStorage.Library.Items.Types)["Pet"]
-    if not PetType then
-        warn("Тип 'Pet' не найден.")
-        return pets
-    end
-
-    -- PetType:All() возвращает таблицу вида {[UID] = item}
-    for uid, item in pairs(PetType:All()) do
-        table.insert(pets, item:Clone()) -- клонируем, чтобы безопасно читать
-    end
-    return pets
-end
-
--- ============== ОСНОВНАЯ ЛОГИКА ==============
-local pets = getAllPets()
-if #pets == 0 then
-    warn("Нет питомцев для отправки.")
+-- Получаем тип "Pet" (правильный путь через Items.Types)
+local petType = Items.Types["Pet"]
+if not petType then
+    warn("Тип 'Pet' не найден в Items.Types. Проверь целостность дампа.")
     return
 end
 
-local sentCount = 0
-local failedUIDs = {}
+-- Собираем всех питомцев через контейнер игрока
+-- Используем официальный InventoryCmds, как это делает игра
+local InventoryCmds = require(ReplicatedStorage.Library.Client.InventoryCmds)
+local playerState = InventoryCmds.State() -- состояние локального игрока
+if not playerState then
+    warn("Не удалось получить состояние игрока. Данные ещё не загружены?")
+    return
+end
 
-for _, pet in ipairs(pets) do
-    local className = pet.Class.Name -- "Pet"
+local container = playerState.container
+local allPets = container:All(petType) -- массив всех питомцев
+
+if #allPets == 0 then
+    print("Нет питомцев для отправки.")
+    return
+end
+
+print(string.format("Найдено питомцев: %d. Начинаю отправку...", #allPets))
+
+-- Функция отправки одного питомца
+local function sendPet(pet)
+    local className = pet.Class.Name   -- "Pet"
     local uid = pet:GetUID()
     local amount = pet:GetAmount()
-
+    
+    -- Питомцы не стакаются, но на всякий случай ограничим 1
     if amount > 1 then
-        warn(string.format("Питомец %s имеет количество %d. Отправляю только 1.", uid, amount))
         amount = 1
     end
 
+    -- Выполняем серверный вызов (аналог нажатия "Отправить")
     local ok, err = pcall(function()
         local success, msg = Network.Invoke("Mailbox: Send", RECEIVER_USERNAME, MESSAGE, className, uid, amount)
         if not success then
-            table.insert(failedUIDs, uid .. ": " .. (msg or "нет ответа"))
+            warn("❌ Ошибка отправки " .. uid .. ": " .. (msg or "неизвестно"))
+            return false
         end
+        return true
     end)
 
     if not ok then
-        table.insert(failedUIDs, uid .. ": ошибка выполнения")
+        warn("❌ Критическая ошибка при отправке " .. uid .. ": " .. tostring(err))
+        return false
+    end
+    return true
+end
+
+-- Отправляем по одному с паузой, чтобы не сработала защита от спама
+local sent, failed = 0, 0
+for _, pet in ipairs(allPets) do
+    if sendPet(pet) then
+        sent = sent + 1
+        print(string.format("✅ Отправлен: %s", pet:GetUID()))
     else
-        sentCount = sentCount + 1
+        failed = failed + 1
     end
-
-    -- Небольшая задержка, чтобы не спамить сервер (0.5 секунды)
-    task.wait(0.25)
+    task.wait(0.6) -- небольшая задержка
 end
 
-print(string.format("Отправлено питомцев: %d из %d", sentCount, #pets))
-if #failedUIDs > 0 then
-    warn("Не удалось отправить следующих питомцев:")
-    for _, info in ipairs(failedUIDs) do
-        warn(info)
-    end
-end
+print(string.format("\nГотово! Отправлено: %d, Не удалось: %d", sent, failed))
