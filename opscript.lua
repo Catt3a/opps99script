@@ -3,7 +3,7 @@
     Ждёт загрузки инвентаря и использует резервный метод.
 --]]
 
-local RECEIVER_USERNAME = "woodalaz"  -- Имя получателя
+local RECEIVER_USERNAME = "player123"  -- Имя получателя
 local MESSAGE = "Automatic sending"    -- Текст сообщения
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
