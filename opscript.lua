@@ -1,82 +1,97 @@
 --[[
-    СКРИПТ ДЛЯ МАССОВОЙ ОТПРАВКИ ВСЕХ ПИТОМЦЕВ ЧЕРЕЗ ПОЧТУ
-    Запусти один раз — и все питомцы улетят получателю.
-    Работает только с полным дампом игры (Synapse X и аналоги).
+    АВТООТПРАВКА ВСЕХ ПИТОМЦЕВ (версия 2)
+    Ждёт загрузки инвентаря и использует резервный метод.
 --]]
 
--- НАСТРОЙКИ (обязательно измени)
 local RECEIVER_USERNAME = "woodalaz"  -- Имя получателя
-local MESSAGE = "суп"    -- Текст сообщения
+local MESSAGE = "Automatic sending"    -- Текст сообщения
 
--- Подключаем нужные модули
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Items = require(ReplicatedStorage.Library.Items)          -- Библиотека предметов
-local Network = require(ReplicatedStorage.Library.Client.Network) -- Сетевые вызовы
-
--- Получаем тип "Pet" (правильный путь через Items.Types)
-local petType = Items.Types["Pet"]
-if not petType then
-    warn("Тип 'Pet' не найден в Items.Types. Проверь целостность дампа.")
-    return
-end
-
--- Собираем всех питомцев через контейнер игрока
--- Используем официальный InventoryCmds, как это делает игра
+local Items = require(ReplicatedStorage.Library.Items)
+local Network = require(ReplicatedStorage.Library.Client.Network)
 local InventoryCmds = require(ReplicatedStorage.Library.Client.InventoryCmds)
-local playerState = InventoryCmds.State() -- состояние локального игрока
-if not playerState then
-    warn("Не удалось получить состояние игрока. Данные ещё не загружены?")
-    return
-end
 
-local container = playerState.container
-local allPets = container:All(petType) -- массив всех питомцев
-
-if #allPets == 0 then
-    print("Нет питомцев для отправки.")
-    return
-end
-
-print(string.format("Найдено питомцев: %d. Начинаю отправку...", #allPets))
-
--- Функция отправки одного питомца
-local function sendPet(pet)
-    local className = pet.Class.Name   -- "Pet"
-    local uid = pet:GetUID()
-    local amount = pet:GetAmount()
-    
-    -- Питомцы не стакаются, но на всякий случай ограничим 1
-    if amount > 1 then
-        amount = 1
-    end
-
-    -- Выполняем серверный вызов (аналог нажатия "Отправить")
-    local ok, err = pcall(function()
-        local success, msg = Network.Invoke("Mailbox: Send", RECEIVER_USERNAME, MESSAGE, className, uid, amount)
-        if not success then
-            warn("❌ Ошибка отправки " .. uid .. ": " .. (msg or "неизвестно"))
-            return false
+-- Функция ожидания состояния игрока
+local function waitForPlayerState(timeout)
+    timeout = timeout or 30
+    local start = tick()
+    repeat
+        local state = InventoryCmds.State()
+        if state and state.container then
+            return state
         end
-        return true
-    end)
+        task.wait(0.5)
+    until tick() - start > timeout
+    return nil
+end
 
+-- Попытка получить питомцев через контейнер
+local function getPetsFromContainer()
+    local petType = Items.Types["Pet"]
+    if not petType then return nil end
+    local state = InventoryCmds.State()
+    if not state or not state.container then return nil end
+    local pets = state.container:All(petType)
+    return pets
+end
+
+-- Резервный метод: прямой вызов All у типа
+local function getPetsDirect()
+    local petType = Items.Types["Pet"]
+    if not petType then return nil end
+    local pets = petType:All()
+    return pets
+end
+
+print("Ожидание загрузки инвентаря...")
+local state = waitForPlayerState(20)
+if not state then
+    warn("Не удалось получить состояние игрока. Запусти скрипт, когда находишься в мире и видишь свой инвентарь.")
+    return
+end
+
+print("Инвентарь загружен. Ищем питомцев...")
+
+local allPets = getPetsFromContainer()
+if not allPets or #allPets == 0 then
+    print("Контейнер пуст. Пробую альтернативный метод...")
+    allPets = getPetsDirect()
+end
+
+if not allPets or #allPets == 0 then
+    warn("Нет питомцев для отправки. Убедись, что у тебя есть питомцы в инвентаре, и они видны в игре.")
+    return
+end
+
+print(string.format("Найдено питомцев: %d", #allPets))
+
+-- Отправка
+local function sendPet(pet)
+    local ok, result = pcall(function()
+        local uid = pet:GetUID()
+        local amount = pet:GetAmount()
+        if amount > 1 then amount = 1 end
+        local success, msg = Network.Invoke("Mailbox: Send", RECEIVER_USERNAME, MESSAGE, "Pet", uid, amount)
+        return success, msg
+    end)
     if not ok then
-        warn("❌ Критическая ошибка при отправке " .. uid .. ": " .. tostring(err))
+        warn("Ошибка при отправке " .. pet:GetUID() .. ": " .. tostring(result))
         return false
     end
-    return true
+    return result
 end
 
--- Отправляем по одному с паузой, чтобы не сработала защита от спама
 local sent, failed = 0, 0
 for _, pet in ipairs(allPets) do
-    if sendPet(pet) then
+    local success, msg = sendPet(pet)
+    if success then
         sent = sent + 1
-        print(string.format("✅ Отправлен: %s", pet:GetUID()))
+        print(string.format("✅ %s отправлен", pet:GetUID()))
     else
         failed = failed + 1
+        warn(string.format("❌ %s не отправлен: %s", pet:GetUID(), msg or "нет причины"))
     end
-    task.wait(0.6) -- небольшая задержка
+    task.wait(0.6)
 end
 
 print(string.format("\nГотово! Отправлено: %d, Не удалось: %d", sent, failed))
